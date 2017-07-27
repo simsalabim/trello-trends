@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <script src="http://code.jquery.com/jquery-1.7.1.min.js"></script>
+    <script src="https://api.trello.com/1/client.js?key=d608b3d05a3af963ad63ff51a9cd0c09"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.4/lodash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/2.6.0/Chart.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.18.1/moment.min.js"></script>
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css" integrity="sha384-BVYiiSIFeK1dGmJRAkycuHAHRg32OmUcww7on3RYdg4Va+PmSTsz/K68vbdEjh4u" crossorigin="anonymous"> <script src="https://cdnjs.cloudflare.com/ajax/libs/twix.js/1.2.0/twix.min.js"></script>
+
+    <style type="text/css">
+      .container { margin-top: 20px; }
+      .login, .logout { cursor: pointer; }
+      .b-board { color: #FFFFFF; opacity: 0.8; }
+      .b-board:hover { color: #FFFFFF; opacity: 1; }
+      .checkbox { margin-left: 20px; }
+      .hint { color: #808080; }
+    </style>
+  </head>
+
+  <body>
+    <div class="container">
+      <div class="row">
+        <div class="col-md-1">&nbsp;</div>
+
+        <div class="col-md-10 text-center">
+          <button type="button" class="btn btn-default login">
+            <i class="glyphicon glyphicon-log-in"></i> Connect To Trello
+          </button>
+
+          <ul class="boards list-inline"></ul>
+
+          <form class="form-inline">
+            <div class="form-group checkbox">
+              <label for="group-labels">Group labels by color
+                <input type="checkbox" id="group-labels" />
+              </label>
+            </div>
+
+            <div class="form-group checkbox">
+              <label for="trend-interval">Trend Interval
+              <select class="form-control" id="trend-interval">
+                <option value="1">Day</option>
+                <option value="7" selected="selected">Week</option>
+                <option value="14">2 Weeks</option>
+                <option value="30">Month</option>
+                <option value="365">Year</option>
+              </select>
+              </label>
+            </div>
+          </form>
+
+          <div>
+            <small class="hint">Click on a label name in legend to hide/show it on the chart.</small>
+          </div>
+        </div>
+
+        <div class="col-md-1">
+          <button type="button" class="btn btn-default logout hidden">
+            <i class="glyphicon glyphicon-log-out"></i> Log Out
+          </button>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col-md-12">
+          <canvas id="canvas" style="width: 75%"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <script type="text/javascript">
+      var logout = function() {
+        Trello.deauthorize();
+
+        var ctx = document.getElementById("canvas").getContext("2d");
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        $(".boards").html("");
+        $(".login").removeClass("hidden");
+        $(".logout").addClass("hidden");
+      };
+
+      var drawTrends = function(boardId, aggregateLabels, trendInterval) {
+        if (! boardId) {
+          return;
+        }
+
+        Trello.get("boards/" + boardId + "/cards/all?fields=id,name,labels", function(cards) {
+          var allLabels = _.uniqBy(_.flatten(_.map(cards, "labels")), "id");
+
+          var datasets = {};
+          var labelField = aggregateLabels ? "color" : "name";
+
+          cards.forEach(function(card) {
+            card["createdAt"] = parseInt(card.id.slice(0, 8), 16);
+            var date = new Date(card.createdAt * 1000);
+            card["createdAtDate"] = `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
+
+            card.labels.forEach(function(label) {
+              var labelName = label[labelField] || "unlabelled";
+
+              if (Object.keys(datasets).includes(labelName)) {
+                if (! datasets[labelName].includes(labelName)) {
+                  datasets[labelName] = datasets[labelName].concat(card);
+                }
+              } else {
+                datasets[labelName] = [card];
+              }
+            });
+          });
+
+          var dates = _.uniq(_.map(_.sortBy(cards, "createdAt"), "createdAtDate"));
+          var itr = moment.twix(_.first(dates), _.last(dates)).iterate(trendInterval, "days");
+          var range = [];
+          while(itr.hasNext()) { range.push(itr.next().format("YYYY-M-D")) }
+
+          var findNextGroupDate = function(range, date) {
+            var i = 0;
+            while (i < range.length) {
+              if (moment(date).isSameOrAfter(range[i]) && moment(date).isBefore(range[i + 1])) {
+                return range[i];
+              }
+              i++;
+            }
+            return null;
+          };
+
+          for(var key in datasets) {
+            datasets[key] = _.sortBy(datasets[key], "createdAt");
+            datasets[key].forEach(function(card) {
+              card.groupDate = findNextGroupDate(range, card.createdAtDate);
+            });
+          }
+
+          var chartDatasets = _.map(datasets, function(cards, label) {
+            var g = _.groupBy(cards, "groupDate");
+            return {
+              label: label,
+              data: _.map(range, function(date) {
+                if (g[date]) {
+                  return g[date].length;
+                }
+                return 0;
+              }),
+              borderColor: aggregateLabels ? label : _.find(allLabels, function(l) {
+                if (l.name === label) {
+                  return true;
+                }
+              }).color,
+              fill: false
+            }
+          });
+
+          var ctx = document.getElementById("canvas").getContext("2d");
+          new Chart(ctx, {
+            type: "line",
+            data: {
+              labels: range,
+              datasets: chartDatasets
+            },
+            options: {
+              responsive: true,
+              legend: { display: true }
+            }
+          });
+        });
+      };
+
+      $(function() {
+        $(".logout").click(logout);
+
+        $(".login").click(function() {
+          Trello.authorize({
+            type: "popup",
+            success: onAuthorize
+          });
+        });
+
+        var $groupLabelsCheckbox = $("#group-labels"),
+          $trendInterval = $("#trend-interval"),
+          boardId;
+
+        $groupLabelsCheckbox.on("change", function() {
+          drawTrends(boardId, $groupLabelsCheckbox.prop("checked"), parseInt($trendInterval.val()));
+        });
+
+        $trendInterval.on("change", function() {
+          drawTrends(boardId, $groupLabelsCheckbox.prop("checked"), parseInt($trendInterval.val()));
+        });
+
+        var onAuthorize = function() {
+          $(".login").addClass("hidden");
+          $(".logout").removeClass("hidden");
+
+          Trello.members.get("me/boards", function(boards) {
+            var ul = "";
+            boards.forEach(function(board) {
+              var li = `<li><button class="b-board btn btn-default" data-id="${board.id}" style="background: ${board.prefs.backgroundColor}">${board.name}</button></li>`;
+              ul += li;
+            });
+            $(".boards").html(ul);
+
+            $(".b-board").on("click", function(e) {
+              boardId = $(e.currentTarget).data("id");
+              drawTrends(boardId, $groupLabelsCheckbox.prop("checked"), parseInt($trendInterval.val()));
+            });
+          });
+        };
+
+        window.Trello.authorize({
+          interactive: false,
+          success: onAuthorize
+        });
+      });
+    </script>
+  </body>
+</html>
